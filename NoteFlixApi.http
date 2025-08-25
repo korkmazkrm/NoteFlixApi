@@ -1,0 +1,6 @@
+@NoteFlixApi_HostAddress = http://localhost:5278
+
+GET {{NoteFlixApi_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
