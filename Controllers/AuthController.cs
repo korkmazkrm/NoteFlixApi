@@ -6,6 +6,7 @@ using NoteFlixApi.Models;
 using NoteFlixApi.Services;
 using System.Security.Cryptography;
 using System.Text;
+using Serilog;
 
 namespace NoteFlixApi.Controllers
 {
@@ -25,11 +26,14 @@ namespace NoteFlixApi.Controllers
         [HttpPost("register")]
         public async Task<IActionResult> Register([FromBody] RegisterRequest request)
         {
+            Log.Information("Register isteği alındı: {Email}", request.Email);
+            
             try
             {
                 // Email kontrolü
                 if (await _context.Users.AnyAsync(u => u.Email == request.Email))
                 {
+                    Log.Warning("Register hatası: Email zaten kullanılıyor - {Email}", request.Email);
                     return BadRequest(new { error = "Bu email adresi zaten kullanılıyor" });
                 }
                 
@@ -49,10 +53,12 @@ namespace NoteFlixApi.Controllers
                 _context.Users.Add(user);
                 await _context.SaveChangesAsync();
                 
+                Log.Information("Kullanıcı başarıyla kaydedildi: {Email}, UserId: {UserId}", request.Email, user.Id);
                 return Ok(new { message = "Kayıt başarılı! Şimdi giriş yapabilirsiniz" });
             }
             catch (Exception ex)
             {
+                Log.Error(ex, "Register işlemi sırasında hata: {Email}", request.Email);
                 return StatusCode(500, new { error = "Kayıt işlemi sırasında bir hata oluştu" });
             }
         }
@@ -60,18 +66,22 @@ namespace NoteFlixApi.Controllers
         [HttpPost("login")]
         public async Task<IActionResult> Login([FromBody] LoginRequest request)
         {
+            Log.Information("Login isteği alındı: {Email}", request.Email);
+            
             try
             {
                 // Kullanıcıyı bul
                 var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == request.Email);
                 if (user == null)
                 {
+                    Log.Warning("Login hatası: Kullanıcı bulunamadı - {Email}", request.Email);
                     return BadRequest(new { error = "Geçersiz email veya şifre" });
                 }
                 
                 // Şifre kontrolü
                 if (!VerifyPassword(request.Password, user.PasswordHash))
                 {
+                    Log.Warning("Login hatası: Yanlış şifre - {Email}", request.Email);
                     return BadRequest(new { error = "Geçersiz email veya şifre" });
                 }
                 
@@ -117,10 +127,12 @@ namespace NoteFlixApi.Controllers
                     ExpiresAt = DateTime.UtcNow.AddMinutes(60)
                 };
                 
+                Log.Information("Kullanıcı başarıyla giriş yaptı: {Email}, UserId: {UserId}", request.Email, user.Id);
                 return Ok(response);
             }
             catch (Exception ex)
             {
+                Log.Error(ex, "Login işlemi sırasında hata: {Email}", request.Email);
                 return StatusCode(500, new { error = "Giriş işlemi sırasında bir hata oluştu" });
             }
         }
@@ -172,41 +184,56 @@ namespace NoteFlixApi.Controllers
                 
                 return Ok(response);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 return StatusCode(500, new { error = "Token yenileme sırasında bir hata oluştu" });
             }
         }
         
         [HttpGet("validate-token")]
-        public async Task<IActionResult> ValidateToken([FromQuery] string refreshToken)
+        public async Task<IActionResult> ValidateToken([FromQuery] string? refreshToken = null)
         {
             try
             {
-                // Refresh token'ın aktif olup olmadığını kontrol et
-                if (string.IsNullOrEmpty(refreshToken))
+                // Authorization header'dan access token'ı al
+                var authHeader = Request.Headers["Authorization"].FirstOrDefault();
+                if (authHeader == null || !authHeader.StartsWith("Bearer "))
                 {
-                    Console.WriteLine("ValidateToken: Refresh token parametresi eksik");
-                    return Unauthorized(new { error = "Refresh token eksik" });
+                    Console.WriteLine("ValidateToken: Authorization header eksik veya geçersiz");
+                    return Unauthorized(new { error = "Authorization header eksik" });
                 }
 
-                var refreshTokenEntity = await _context.RefreshTokens
-                    .FirstOrDefaultAsync(rt => rt.Token == refreshToken);
-
-                if (refreshTokenEntity == null || refreshTokenEntity.RevokedAt != null || refreshTokenEntity.ExpiresAt <= DateTime.UtcNow)
+                var accessToken = authHeader.Substring("Bearer ".Length);
+                
+                // Access token'ı validate et
+                if (!_jwtService.ValidateToken(accessToken))
                 {
-                    Console.WriteLine("ValidateToken: Refresh token iptal edilmiş veya geçersiz");
-                    return Unauthorized(new { error = "Refresh token iptal edilmiş" });
+                    Console.WriteLine("ValidateToken: Access token geçersiz");
+                    return Unauthorized(new { error = "Access token geçersiz" });
                 }
 
-                Console.WriteLine($"ValidateToken: UserId: {refreshTokenEntity.UserId} - Başarılı");
-                return Ok(new { valid = true });
+                // Eğer refresh token da verilmişse, onu da kontrol et
+                if (!string.IsNullOrEmpty(refreshToken))
+                {
+                    var refreshTokenEntity = await _context.RefreshTokens
+                        .FirstOrDefaultAsync(rt => rt.Token == refreshToken);
+
+                    if (refreshTokenEntity == null || refreshTokenEntity.RevokedAt != null || refreshTokenEntity.ExpiresAt <= DateTime.UtcNow)
+                    {
+                        Console.WriteLine("ValidateToken: Refresh token iptal edilmiş veya geçersiz");
+                        return Unauthorized(new { error = "Refresh token iptal edilmiş" });
+                    }
+                }
+
+                // Access token'dan user ID'yi al
+                var userId = _jwtService.GetUserIdFromToken(accessToken);
+                Console.WriteLine($"ValidateToken: UserId: {userId} - Başarılı");
+                return Ok(new { valid = true, userId = userId });
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"ValidateToken Exception: {ex.Message}");
-                return Unauthorized(new { error = "Token geçersiz" });
-            }
+                    catch (Exception)
+        {
+            return Unauthorized(new { error = "Token geçersiz" });
+        }
         }
 
         [HttpPost("logout")]
@@ -237,7 +264,7 @@ namespace NoteFlixApi.Controllers
                 
                 return Ok(new { message = "Başarıyla çıkış yapıldı" });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 return StatusCode(500, new { error = "Çıkış işlemi sırasında bir hata oluştu" });
             }

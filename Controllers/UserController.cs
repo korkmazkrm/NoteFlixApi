@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using NoteFlixApi.Data;
 using NoteFlixApi.DTOs;
 using NoteFlixApi.Services;
+using Serilog;
 
 namespace NoteFlixApi.Controllers
 {
@@ -30,11 +31,14 @@ namespace NoteFlixApi.Controllers
                 var authHeader = Request.Headers["Authorization"].FirstOrDefault();
                 if (authHeader == null || !authHeader.StartsWith("Bearer "))
                 {
+                    Log.Warning("Premium status hatası: Geçersiz token");
                     return Unauthorized(new { error = "Geçersiz token" });
                 }
                 
                 var token = authHeader.Substring("Bearer ".Length);
                 var userId = _jwtService.GetUserIdFromToken(token);
+                
+                Log.Information("Premium status isteği: UserId: {UserId}", userId);
                 
                 // Kullanıcıyı bul
                 var user = await _context.Users.FindAsync(userId);
@@ -51,7 +55,7 @@ namespace NoteFlixApi.Controllers
                 
                 return Ok(response);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 return StatusCode(500, new { error = "Premium durum kontrolü sırasında bir hata oluştu" });
             }
@@ -91,9 +95,39 @@ namespace NoteFlixApi.Controllers
                 
                 return Ok(userDto);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 return StatusCode(500, new { error = "Profil bilgileri alınırken bir hata oluştu" });
+            }
+        }
+        
+        [HttpGet("debug")]
+        [AllowAnonymous]
+        public IActionResult GetDebugInfo()
+        {
+            try
+            {
+                Log.Information("Debug endpoint çağrıldı");
+                
+                var debugInfo = new
+                {
+                    timestamp = DateTime.UtcNow,
+                    environment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Unknown",
+                    machineName = Environment.MachineName,
+                    osVersion = Environment.OSVersion.ToString(),
+                    dotnetVersion = Environment.Version.ToString(),
+                    workingDirectory = Environment.CurrentDirectory,
+                    databaseConnection = _context.Database.CanConnect() ? "Connected" : "Not Connected",
+                    headers = Request.Headers.ToDictionary(h => h.Key, h => h.Value.ToString()),
+                    queryParams = Request.Query.ToDictionary(q => q.Key, q => q.Value.ToString())
+                };
+                
+                return Ok(debugInfo);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Debug endpoint hatası");
+                return StatusCode(500, new { error = ex.Message, stackTrace = ex.StackTrace });
             }
         }
     }
